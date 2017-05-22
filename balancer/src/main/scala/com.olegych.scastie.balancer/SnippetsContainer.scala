@@ -8,7 +8,6 @@ import upickle.default.{write => uwrite, read => uread}
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.file._
-import attribute.BasicFileAttributes
 import FileVisitResult.CONTINUE
 
 import java.util.{Base64, UUID}
@@ -17,11 +16,12 @@ import System.{lineSeparator => nl}
 
 case class UserLogin(login: String)
 
-class SnippetsContainer(root: Path) {
+class SnippetsContainer(root: Path, oldRoot: Path) {
 
   def create(inputs: Inputs, user: Option[UserLogin]): SnippetId = {
     val uuid = randomUrlFirendlyBase64UUID
-    val snippetId = SnippetId(uuid, user.map(u => SnippetUserPart(u.login, None)))
+    val snippetId =
+      SnippetId(uuid, user.map(u => SnippetUserPart(u.login, None)))
     write(inputsFile(snippetId), uwrite(inputs))
     snippetId
   }
@@ -30,21 +30,32 @@ class SnippetsContainer(root: Path) {
     create(inputs.copy(showInUserProfile = true), user)
   }
 
-  def fork(snippetId: SnippetId, inputs: Inputs, user: Option[UserLogin]): Option[SnippetId] = {
-    if(readInputs(snippetId).isDefined) {
-      Some(create(inputs.copy(forked = Some(snippetId), showInUserProfile = true), user))
+  def fork(snippetId: SnippetId,
+           inputs: Inputs,
+           user: Option[UserLogin]): Option[SnippetId] = {
+    if (readInputs(snippetId).isDefined) {
+      Some(
+        create(inputs.copy(forked = Some(snippetId), showInUserProfile = true),
+               user)
+      )
     } else None
   }
 
   def update(snippetId: SnippetId, inputs: Inputs): Option[SnippetId] = {
     snippetId.user match {
       case Some(SnippetUserPart(login, _)) => {
-        val nextSnippetId = 
+        val nextSnippetId =
           SnippetId(
             snippetId.base64UUID,
-            Some(SnippetUserPart(login, Some(lastUpdateId(login, snippetId.base64UUID) + 1)))
+            Some(
+              SnippetUserPart(
+                login,
+                Some(lastUpdateId(login, snippetId.base64UUID) + 1)
+              )
+            )
           )
-        write(inputsFile(nextSnippetId), uwrite(inputs.copy(showInUserProfile = true)))
+        write(inputsFile(nextSnippetId),
+              uwrite(inputs.copy(showInUserProfile = true)))
         Some(nextSnippetId)
       }
       case None => None
@@ -53,11 +64,11 @@ class SnippetsContainer(root: Path) {
 
   def delete(snippetId: SnippetId): Boolean = {
     val in = inputsFile(snippetId)
-    if(Files.exists(in)) {
+    if (Files.exists(in)) {
       Files.delete(in)
 
       val out = outputsFile(snippetId)
-      if(Files.exists(out)) {
+      if (Files.exists(out)) {
         Files.delete(out)
       }
 
@@ -68,29 +79,84 @@ class SnippetsContainer(root: Path) {
   }
 
   def amend(snippetId: SnippetId, inputs: Inputs): Boolean = {
-    if(delete(snippetId)) {
-      write(inputsFile(snippetId), uwrite(inputs))
+    if (delete(snippetId)) {
+      write(inputsFile(snippetId),
+            uwrite(inputs.copy(showInUserProfile = true)))
       true
     } else false
   }
 
   def appendOutput(progress: SnippetProgress): Unit = {
-    write(outputsFile(progress.snippetId), uwrite(progress) + nl, append = true)
+    (progress.scalaJsContent,
+     progress.scalaJsSourceMapContent,
+     progress.snippetId) match {
+      case (Some(scalaJsContent), Some(scalaJsSourceMapContent), Some(sid)) => {
+        write(scalaJsFile(sid), scalaJsContent)
+        write(scalaJsSourceMapFile(sid), scalaJsSourceMapContent)
+      }
+      case _ => ()
+    }
+
+    progress.snippetId.foreach(
+      sid => write(outputsFile(sid), uwrite(progress) + nl, append = true)
+    )
   }
 
   def readSnippet(snippetId: SnippetId): Option[FetchResult] = {
-    readInputs(snippetId).map(inputs =>
-      FetchResult(inputs, readOutputs(snippetId).getOrElse(Nil))
+    readInputs(snippetId).map(
+      inputs => FetchResult(inputs, readOutputs(snippetId).getOrElse(Nil))
+    )
+  }
+
+  def readOldSnippet(id: Int): Option[FetchResult] = {
+    readOldInputs(id).map(
+      inputs => FetchResult(inputs, readOldOutputs(id).getOrElse(Nil))
+    )
+  }
+
+  def oldPath(id: Int): Path =
+    oldRoot
+      .resolve("paste%20d".format(id).replaceAll(" ", "0"))
+      .resolve("src/main/scala/")
+
+  def readOldInputs(id: Int): Option[Inputs] = {
+    slurp(oldPath(id).resolve("test.scala"))
+      .map(OldScastieConverter.convertOldInput)
+  }
+
+  def readOldOutputs(id: Int): Option[List[SnippetProgress]] = {
+    slurp(oldPath(id).resolve("output.txt"))
+      .map(OldScastieConverter.convertOldOutput)
+  }
+
+  def readScalaJs(snippetId: SnippetId): Option[FetchResultScalaJs] = {
+    slurp(scalaJsFile(snippetId)).map(content => FetchResultScalaJs(content))
+  }
+
+  def readScalaJsSourceMap(
+      snippetId: SnippetId
+  ): Option[FetchResultScalaJsSourceMap] = {
+    slurp(scalaJsSourceMapFile(snippetId))
+      .map(content => FetchResultScalaJsSourceMap(content))
+  }
+
+  def readScalaSource(snippetId: SnippetId): Option[FetchResultScalaSource] = {
+    readSnippet(snippetId).flatMap(
+      snippet =>
+        instrumentation
+          .Instrument(snippet.inputs.code, snippet.inputs.target) match {
+          case Right(instrumented) =>
+            Some(FetchResultScalaSource(instrumented))
+          case _ => None
+      }
     )
   }
 
   def listSnippets(user: UserLogin): List[SnippetSummary] = {
     import scala.collection.JavaConverters._
     val dir = root.resolve(user.login)
-    if(Files.exists(dir)) {
-
+    if (Files.exists(dir)) {
       val ds = Files.newDirectoryStream(dir)
-
       val uuids =
         try {
           ds.asScala.map(_.getFileName.toString)
@@ -100,14 +166,15 @@ class SnippetsContainer(root: Path) {
           ds.close()
         }
 
-      uuids.flatMap{uuid =>
+      uuids.flatMap { uuid =>
         val updates = updateIdS(user.login, uuid)
 
-        updates.flatMap{update =>
-          val snippetId = SnippetId(uuid, Some(SnippetUserPart(user.login, Some(update))))
+        updates.flatMap { update =>
+          val snippetId =
+            SnippetId(uuid, Some(SnippetUserPart(user.login, Some(update))))
           readInputs(snippetId) match {
             case Some(inputs) =>
-              if(inputs.showInUserProfile) {
+              if (inputs.showInUserProfile) {
                 List(
                   SnippetSummary(
                     snippetId,
@@ -123,42 +190,50 @@ class SnippetsContainer(root: Path) {
   }
 
   private def readInputs(snippetId: SnippetId): Option[Inputs] = {
-    if (Files.exists(inputsFile(snippetId))) {
-      read(inputsFile(snippetId)).map(content => uread[Inputs](content))
-    } else None
+    slurp(inputsFile(snippetId)).map(content => uread[Inputs](content))
   }
 
-  private def readOutputs(snippetId: SnippetId): Option[List[SnippetProgress]] = {
-    if (Files.exists(outputsFile(snippetId)))
-      read(outputsFile(snippetId)).map(
-        _.lines
-          .filter(_.nonEmpty)
-          .map(line => uread[SnippetProgress](line))
-          .toList)
-    else None
+  private def readOutputs(
+      snippetId: SnippetId
+  ): Option[List[SnippetProgress]] = {
+    slurp(outputsFile(snippetId)).map(
+      _.lines
+        .filter(_.nonEmpty)
+        .map(line => uread[SnippetProgress](line))
+        .toList
+    )
   }
 
-  private val json = ".json"
-  private val input = "input"
-  private val output = "output"
+  private val inputFileName = "input.json"
+  private val outputFileName = "output.json"
+  private val scalaJsFileName = ScalaTarget.Js.targetFilename
+  private val scalaJsSourceMapFileName = ScalaTarget.Js.sourceMapFilename
 
   private def inputsFile(snippetId: SnippetId): Path = {
-    snippetFile(snippetId, input)
+    snippetFile(snippetId, inputFileName)
   }
 
   private def outputsFile(snippetId: SnippetId): Path = {
-    snippetFile(snippetId, output)
+    snippetFile(snippetId, outputFileName)
+  }
+
+  private def scalaJsFile(snippetId: SnippetId): Path = {
+    snippetFile(snippetId, scalaJsFileName)
+  }
+
+  private def scalaJsSourceMapFile(snippetId: SnippetId): Path = {
+    snippetFile(snippetId, scalaJsSourceMapFileName)
   }
 
   private def lastUpdateId(login: String, base64UUID: String): Int = {
     val res = updateIdS(login, base64UUID)
-    if(res.isEmpty) 0
+    if (res.isEmpty) 0
     else res.max
   }
 
   private def updateIdS(login: String, base64UUID: String): List[Int] = {
     val dir = root.resolve(Paths.get(login, base64UUID))
-    if(Files.exists(dir)) {
+    if (Files.exists(dir)) {
       import scala.collection.JavaConverters._
       val ds = Files.newDirectoryStream(dir)
       try {
@@ -184,40 +259,41 @@ class SnippetsContainer(root: Path) {
     }
   }
 
-  private def snippetFile(snippetId: SnippetId, name: String): Path = {
-    if(!Files.exists(root)) Files.createDirectory(root)
-    
+  private def snippetFile(snippetId: SnippetId, fileName: String): Path = {
+    if (!Files.exists(root)) Files.createDirectory(root)
+
     val baseDirectory =
       snippetId.user match {
         case Some(SnippetUserPart(login, update)) => {
           val userFolder = root.resolve(login)
-          if(!Files.exists(userFolder)) Files.createDirectory(userFolder)
+          if (!Files.exists(userFolder)) Files.createDirectory(userFolder)
 
           val base = userFolder.resolve(snippetId.base64UUID)
-          if(!Files.exists(base)) Files.createDirectory(base)
-          
+          if (!Files.exists(base)) Files.createDirectory(base)
+
           val baseVersion = base.resolve(update.getOrElse(0).toString)
-          if(!Files.exists(baseVersion)) Files.createDirectory(baseVersion)
-          
+          if (!Files.exists(baseVersion)) Files.createDirectory(baseVersion)
+
           baseVersion
         }
         case None => {
           val anon = root.resolve(anonFolder)
-          if(!Files.exists(anon)) Files.createDirectory(anon)
+          if (!Files.exists(anon)) Files.createDirectory(anon)
 
           val base = anon.resolve(snippetId.base64UUID)
-          if(!Files.exists(base)) Files.createDirectory(base)
+          if (!Files.exists(base)) Files.createDirectory(base)
           base
         }
       }
 
-    baseDirectory.resolve(Paths.get(name + json))
+    baseDirectory.resolve(Paths.get(fileName))
   }
 
   // example output: GGdknrcEQVu3elXyboKcYQ
   private def randomUrlFirendlyBase64UUID(): String = {
     def toBase64(uuid: UUID): String = {
-      val (high, low) = (uuid.getMostSignificantBits, uuid.getLeastSignificantBits)
+      val (high, low) =
+        (uuid.getMostSignificantBits, uuid.getLeastSignificantBits)
       val buffer = ByteBuffer.allocate(java.lang.Long.BYTES * 2)
       buffer.putLong(high)
       buffer.putLong(low)
@@ -227,8 +303,8 @@ class SnippetsContainer(root: Path) {
 
     var res: String = null
     val allowed = ('a' to 'z').toSet ++ ('A' to 'Z').toSet ++ ('0' to '9').toSet
-    
-    while(res == null || res.exists(c => !allowed.contains(c))) {
+
+    while (res == null || res.exists(c => !allowed.contains(c))) {
       val uuid = java.util.UUID.randomUUID()
       res = toBase64(uuid)
     }
@@ -244,17 +320,18 @@ class SnippetsContainer(root: Path) {
       !ret
     }
 
-    Files.walkFileTree(base, new FileVisitor[Path]{ 
-      def postVisitDirectory(path: Path, ex: IOException): FileVisitResult = {
-        if(dirIsEmpty(path)) {
-          Files.delete(path)
+    Files.walkFileTree(
+      base,
+      new SimpleFileVisitor[Path] {
+        override def postVisitDirectory(path: Path,
+                                        ex: IOException): FileVisitResult = {
+          if (dirIsEmpty(path)) {
+            Files.delete(path)
+          }
+          CONTINUE
         }
-        CONTINUE
       }
-      def preVisitDirectory(path: Path,x$2: BasicFileAttributes): FileVisitResult = CONTINUE
-      def visitFile(path: Path,x$2: BasicFileAttributes): FileVisitResult = CONTINUE
-      def visitFileFailed(path: Path, ex: IOException): FileVisitResult = CONTINUE
-    })
+    )
 
     ()
   }

@@ -12,3 +12,7 @@ TODO
 .idea
 deployment/beta
 deployment/users.txt
+node_modules
+bin/.scalafmt
+bin/.coursier
+bin/drone

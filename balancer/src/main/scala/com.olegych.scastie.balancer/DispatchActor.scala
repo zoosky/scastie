@@ -26,11 +26,13 @@ case class DeleteSnippet(snippetId: SnippetId)
 case class ForkSnippet(snippetId: SnippetId, inputs: InputsWithIpAndUser)
 
 case class FetchSnippet(snippetId: SnippetId)
+case class FetchOldSnippet(id: Int)
 case class FetchUserSnippets(user: User)
 
 case object LoadBalancerStateRequest
 case class LoadBalancerStateResponse(
-    loadBalancer: LoadBalancer[String, ActorSelection])
+    loadBalancer: LoadBalancer[String, ActorSelection]
+)
 
 class DispatchActor(progressActor: ActorRef) extends Actor with ActorLogging {
 
@@ -66,22 +68,26 @@ class DispatchActor(progressActor: ActorRef) extends Actor with ActorLogging {
   }
 
   private val container = new SnippetsContainer(
-    Paths.get(configuration.getString("snippets-dir"))
+    Paths.get(configuration.getString("snippets-dir")),
+    Paths.get(configuration.getString("old-snippets-dir"))
   )
 
   private val portsInfo = ports.mkString("[", ", ", "]")
   log.info(s"connecting to: $host $portsInfo")
 
-  private def run(inputsWithIpAndUser: InputsWithIpAndUser, snippetId: SnippetId): Unit = {
+  private def run(inputsWithIpAndUser: InputsWithIpAndUser,
+                  snippetId: SnippetId): Unit = {
     val InputsWithIpAndUser(inputs, ip, user) = inputsWithIpAndUser
 
     log.info("id: {}, ip: {} run {}", snippetId, ip, inputs)
 
-
-    val (server, balancer) = loadBalancer.add(Task(inputs.sbtConfig, Ip(ip), snippetId))
+    val (server, balancer) =
+      loadBalancer.add(Task(inputs.sbtConfig, Ip(ip), snippetId))
     loadBalancer = balancer
-    server.ref.tell(SbtTask(snippetId, inputs, ip, user.map(_.login), progressActor), self)
-
+    server.ref.tell(
+      SbtTask(snippetId, inputs, ip, user.map(_.login), progressActor),
+      self
+    )
   }
 
   def receive = {
@@ -93,7 +99,8 @@ class DispatchActor(progressActor: ActorRef) extends Actor with ActorLogging {
 
     case RunSnippet(inputsWithIpAndUser) => {
       val InputsWithIpAndUser(inputs, _, user) = inputsWithIpAndUser
-      val snippetId = container.create(inputs, user.map(u => UserLogin(u.login)))
+      val snippetId =
+        container.create(inputs, user.map(u => UserLogin(u.login)))
       run(inputsWithIpAndUser, snippetId)
       sender ! snippetId
     }
@@ -102,22 +109,23 @@ class DispatchActor(progressActor: ActorRef) extends Actor with ActorLogging {
       val InputsWithIpAndUser(inputs, _, user) = inputsWithIpAndUser
       val snippetId = container.save(inputs, user.map(u => UserLogin(u.login)))
       run(inputsWithIpAndUser, snippetId)
-      sender ! snippetId 
+      sender ! snippetId
     }
 
     case AmendSnippet(snippetId, inputsWithIpAndUser) => {
       val amendSuccess = container.amend(snippetId, inputsWithIpAndUser.inputs)
-      if(amendSuccess) {
+      if (amendSuccess) {
         run(inputsWithIpAndUser, snippetId)
       }
       sender ! amendSuccess
     }
 
     case UpdateSnippet(snippetId, inputsWithIpAndUser) => {
-      val updatedSnippetId = container.update(snippetId, inputsWithIpAndUser.inputs)
+      val updatedSnippetId =
+        container.update(snippetId, inputsWithIpAndUser.inputs)
 
-      updatedSnippetId.foreach(snippetIdU =>
-        run(inputsWithIpAndUser, snippetIdU)
+      updatedSnippetId.foreach(
+        snippetIdU => run(inputsWithIpAndUser, snippetIdU)
       )
 
       sender ! updatedSnippetId
@@ -126,7 +134,8 @@ class DispatchActor(progressActor: ActorRef) extends Actor with ActorLogging {
     case ForkSnippet(snippetId, inputsWithIpAndUser) => {
       val InputsWithIpAndUser(inputs, _, user) = inputsWithIpAndUser
 
-      container.fork(snippetId, inputs, user.map(u => UserLogin(u.login))) match {
+      container
+        .fork(snippetId, inputs, user.map(u => UserLogin(u.login))) match {
         case Some(forkedSnippetId) => {
           sender ! Some(forkedSnippetId)
           run(inputsWithIpAndUser, forkedSnippetId)
@@ -144,13 +153,31 @@ class DispatchActor(progressActor: ActorRef) extends Actor with ActorLogging {
       sender ! container.readSnippet(snippetId)
     }
 
+    case FetchOldSnippet(id) => {
+      sender ! container.readOldSnippet(id)
+    }
+
     case FetchUserSnippets(user) => {
       sender ! container.listSnippets(UserLogin(user.login))
     }
 
+    case FetchScalaJs(snippetId) => {
+      sender ! container.readScalaJs(snippetId)
+    }
+
+    case FetchScalaSource(snippetId) => {
+      sender ! container.readScalaSource(snippetId)
+    }
+
+    case FetchScalaJsSourceMap(snippetId) => {
+      sender ! container.readScalaJsSourceMap(snippetId)
+    }
+
     case progress: api.SnippetProgress => {
       if (progress.done) {
-        loadBalancer = loadBalancer.done(progress.snippetId)
+        progress.snippetId.foreach(
+          sid => loadBalancer = loadBalancer.done(sid)
+        )
       }
       container.appendOutput(progress)
     }

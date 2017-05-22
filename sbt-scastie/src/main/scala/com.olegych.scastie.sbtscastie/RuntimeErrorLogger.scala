@@ -1,7 +1,10 @@
+package com.olegych.scastie
+package sbtscastie
+
+import api.{ConsoleOutput, RuntimeError}
+
 import sbt._
 import Keys._
-
-import sbtapi._
 
 import java.io.{PrintWriter, OutputStream, StringWriter}
 import upickle.default.{write => uwrite}
@@ -9,7 +12,8 @@ import upickle.default.{write => uwrite}
 object RuntimeErrorLogger {
   private object NoOp {
     def apply(): NoOp = {
-      def out(in: String): Unit = println(uwrite(SbtOutput(in.trim)))
+      def out(in: String): Unit =
+        println(uwrite(ConsoleOutput.SbtOutput(in.trim)))
 
       new NoOp(new OutputStream {
         override def close(): Unit = ()
@@ -33,36 +37,17 @@ object RuntimeErrorLogger {
           def success(message: => String): Unit = () // << this is never called
 
           def trace(t: => Throwable): Unit = {
-            def search(e: Throwable) = {
-              e.getStackTrace
-                .find(trace =>
-                  trace.getFileName == "main.scala" && trace.getLineNumber != -1)
-                .map(v ⇒ (e, Some(v.getLineNumber)))
-            }
-            def loop(e: Throwable): Option[(Throwable, Option[Int])] = {
-              val s = search(e)
-              if (s.isEmpty)
-                if (e.getCause != null) loop(e.getCause)
-                else Some((e, None))
-              else s
-            }
 
             // Nonzero exit code: 1
             val sbtTrap =
               t.isInstanceOf[RuntimeException] &&
                 t.getMessage == "Nonzero exit code: 1" &&
-                !t.getStackTrace.exists(e =>
-                  e.getClassName == "sbt.Run" && e.getMethodName == "invokeMain")
+                !t.getStackTrace.exists(
+                  e => e.getClassName == "sbt.Run" && e.getMethodName == "invokeMain"
+                )
 
             if (!sbtTrap) {
-              loop(t).map {
-                case (err, line) ⇒
-                  val errors = new StringWriter()
-                  t.printStackTrace(new PrintWriter(errors))
-                  val fullStack = errors.toString()
-
-                  println(uwrite(RuntimeError(err.toString, line, fullStack)))
-              }
+              println(uwrite(RuntimeError.fromTrowable(t)))
             }
           }
         }

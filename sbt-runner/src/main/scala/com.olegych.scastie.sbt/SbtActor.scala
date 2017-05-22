@@ -11,7 +11,7 @@ import scala.meta.parsers.Parsed
 import org.scalafmt.{Scalafmt, Formatted}
 import org.scalafmt.config.{ScalafmtConfig, ScalafmtRunner}
 
-import upickle.default.{read => uread, Reader}
+import upickle.default.{read => uread, write => uwrite, Reader}
 
 import akka.actor.{Actor, ActorRef}
 
@@ -24,7 +24,9 @@ import org.slf4j.LoggerFactory
 import java.io.{PrintWriter, StringWriter}
 
 class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
-  private var sbt = new Sbt()
+  private val defaultConfig = Inputs.default
+
+  private var sbt = new Sbt(defaultConfig)
   private val log = LoggerFactory.getLogger(getClass)
 
   private def format(code: String,
@@ -55,24 +57,33 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
   private def warmUp(): Unit = {
     if (production) {
       log.info("warming up sbt")
-      val Right(in) = instrument(Inputs.default)
-      sbt.eval("run", in, (line, _, _) => log.info(line), reload = false)
+      val Right(in) = instrument(defaultConfig)
+      sbt.eval("run", in, (line, _, _, _) => log.info(line), reload = false)
+      ()
     }
   }
 
-  private def instrument(inputs: Inputs): Either[InstrumentationFailure, Inputs] = {
+  private def instrument(
+      inputs: Inputs
+  ): Either[InstrumentationFailure, Inputs] = {
     if (inputs.worksheetMode) {
-      instrumentation.Instrument(inputs.code, inputs.target).right.map(instrumented =>
-        inputs.copy(code = instrumented)
-      )
+      instrumentation
+        .Instrument(inputs.code, inputs.target)
+        .map(instrumented => inputs.copy(code = instrumented))
     } else Right(inputs)
   }
 
-  private def run(snippetId: SnippetId, inputs: Inputs, ip: String, login: Option[String], 
-                  progressActor: ActorRef, snippetActor: ActorRef, forcedProgramMode: Boolean) = {
+  private def run(snippetId: SnippetId,
+                  inputs: Inputs,
+                  ip: String,
+                  login: Option[String],
+                  progressActor: ActorRef,
+                  snippetActor: ActorRef,
+                  forcedProgramMode: Boolean) = {
     val scalaTargetType = inputs.target.targetType
+    val isScalaJs = inputs.target.targetType == ScalaTargetType.JS
 
-    def eval(command: String, reload: Boolean) =
+    def eval(command: String, reload: Boolean): Boolean =
       sbt.eval(command,
                inputs,
                processSbtOutput(
@@ -80,54 +91,56 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
                  forcedProgramMode,
                  progressActor,
                  snippetId,
-                 snippetActor
+                 snippetActor,
+                 isScalaJs
                ),
                reload)
 
-    def timeout(duration: FiniteDuration): Unit = {
+    def timeout(duration: FiniteDuration): Boolean = {
       log.info(s"restarting sbt: $inputs")
       progressActor !
-        SnippetProgress(
-          snippetId = snippetId,
-          userOutput = None,
-          sbtOutput = None,
-          compilationInfos = List(
-            Problem(
-              Error,
-              line = None,
-              message = s"timed out after $duration"
+        SnippetProgress.default
+          .copy(
+            snippetId = Some(snippetId),
+            timeout = true,
+            done = true,
+            compilationInfos = List(
+              Problem(
+                Error,
+                line = None,
+                message = s"timed out after $duration"
+              )
             )
-          ),
-          instrumentations = Nil,
-          runtimeError = None,
-          done = true,
-          timeout = true,
-          forcedProgramMode = false
-        )
+          )
 
       sbt.kill()
-      sbt = new Sbt()
+      sbt = new Sbt(defaultConfig)
       warmUp()
+      true
     }
 
     log.info(s"== updating $snippetId ==")
 
     val sbtReloadTime = 40.seconds
-    if (sbt.needsReload(inputs)) {
-      withTimeout(sbtReloadTime)(eval("compile", reload = true))(
-        timeout(sbtReloadTime))
+    val reloadError =
+      if (sbt.needsReload(inputs)) {
+        withTimeout(sbtReloadTime)(eval("compile", reload = true))(
+          timeout(sbtReloadTime)
+        )
+      } else false
+
+    if (!reloadError) {
+      log.info(s"== running $snippetId ==")
+
+      withTimeout(runTimeout)({
+        scalaTargetType match {
+          case JVM | Dotty | Native | Typelevel => eval("run", reload = false)
+          case JS => eval("fastOptJS", reload = false)
+        }
+      })(timeout(runTimeout))
+
+      log.info(s"== done  $snippetId ==")
     }
-
-    log.info(s"== running $snippetId ==")
-
-    withTimeout(runTimeout)({
-      scalaTargetType match {
-        case JVM | Dotty | Native | Typelevel => eval("run", reload = false)
-        case JS => eval("fastOptJs", reload = false)
-      }
-    })(timeout(runTimeout))
-
-    log.info(s"== done  $snippetId ==")
   }
 
   def receive = {
@@ -139,32 +152,42 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
 
       instrument(inputs) match {
         case Right(inputs0) => {
-          run(snippetId, inputs0, ip, login, progressActor, sender, forcedProgramMode = false)
-        } 
+          run(snippetId,
+              inputs0,
+              ip,
+              login,
+              progressActor,
+              sender,
+              forcedProgramMode = false)
+        }
         case Left(error) => {
           def signalError(message: String, line: Option[Int]): Unit = {
-            val progress = SnippetProgress(
-              snippetId = snippetId,
-              userOutput = None,
-              sbtOutput = None,
-              compilationInfos = List(Problem(Error, line, message)),
-              instrumentations = Nil,
-              runtimeError = None,
-              done = true,
-              timeout = false,
-              forcedProgramMode = false
-            )  
+            val progress =
+              SnippetProgress.default
+                .copy(
+                  snippetId = Some(snippetId),
+                  compilationInfos = List(Problem(Error, line, message))
+                )
 
             progressActor ! progress
             sender ! progress
           }
 
-          error match { 
+          error match {
             case HasMainMethod => {
-              run(snippetId, inputs.copy(worksheetMode = false), ip, login, progressActor, sender, forcedProgramMode = true)
+              run(snippetId,
+                  inputs.copy(worksheetMode = false),
+                  ip,
+                  login,
+                  progressActor,
+                  sender,
+                  forcedProgramMode = true)
             }
-            case UnsupportedDialect => 
-              signalError("The worksheet mode does not support this Scala target", None)
+            case UnsupportedDialect =>
+              signalError(
+                "The worksheet mode does not support this Scala target",
+                None
+              )
 
             case ParsingError(Parsed.Error(pos, message, _)) => {
               val lineOffset = getLineOffset(worksheetMode = true)
@@ -178,9 +201,10 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
     }
   }
 
-  private def withTimeout(timeout: Duration)(block: ⇒ Unit)(
-      onTimeout: => Unit): Unit = {
-    val task = new FutureTask(new Callable[Unit]() { def call = block })
+  private def withTimeout[T](
+      timeout: Duration
+  )(block: ⇒ T)(onTimeout: => T): T = {
+    val task = new FutureTask(new Callable[T]() { def call = block })
     val thread = new Thread(task)
     try {
       thread.start()
@@ -201,8 +225,10 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
       forcedProgramMode: Boolean,
       progressActor: ActorRef,
       snippetId: SnippetId,
-      snippetActor: ActorRef): (String, Boolean, Boolean) => Unit = {
-    (line, done, reload) =>
+      snippetActor: ActorRef,
+      isScalaJs: Boolean
+  ): (String, Boolean, Boolean, Boolean) => Unit = {
+    (line, done, sbtError, reload) =>
       {
         val lineOffset = getLineOffset(worksheetMode)
 
@@ -210,17 +236,21 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
         val instrumentations =
           extract[List[api.Instrumentation]](line, report = true)
         val runtimeError = extractRuntimeError(line, lineOffset)
-        val sbtOutput = extract[sbtapi.SbtOutput](line)
+        val sbtOutput = extract[ConsoleOutput.SbtOutput](line)
 
-        // look like our sbt logger is not catching all messages
-        val sbtMessages = List(
-          "[info]",
-          "[success]",
-          "[error]",
-          "[warn]"
+        // sbt plugin is not loaded at this stage. we need to drop those messages
+        val initializationMessages = List(
+          "[info] Loading global plugins from",
+          "[info] Loading project definition from",
+          "[info] Set current project to scastie",
+          "[info] Updating {file:",
+          "[info] Done updating.",
+          "[info] Resolving",
+          "[error] Type error in expression"
         )
 
-        val isSbtMessage = sbtMessages.exists(message => line.startsWith(message))
+        val isSbtMessage =
+          initializationMessages.exists(message => line.startsWith(message))
 
         val userOutput =
           if (problems.isEmpty
@@ -232,46 +262,77 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
             Some(line)
           else None
 
+        val (scalaJsContent, scalaJsSourceMapContent) =
+          if (done && isScalaJs && problems.isEmpty) {
+            (sbt.scalaJsContent(), sbt.scalaJsSourceMapContent())
+          } else (None, None)
+
         val progress = SnippetProgress(
-          snippetId = snippetId,
+          snippetId = Some(snippetId),
           userOutput = userOutput,
-          sbtOutput = if(isSbtMessage) Some(line) else sbtOutput.map(_.line),
+          sbtOutput = if (isSbtMessage) Some(line) else sbtOutput.map(_.line),
           compilationInfos = problems.getOrElse(Nil),
           instrumentations = instrumentations.getOrElse(Nil),
           runtimeError = runtimeError,
-          done = done && !reload,
+          scalaJsContent = scalaJsContent,
+          scalaJsSourceMapContent = scalaJsSourceMapContent.map(
+            remapSourceMap(snippetId)
+          ),
+          done = (done && !reload) || sbtError,
           timeout = false,
+          sbtError = sbtError,
           forcedProgramMode = forcedProgramMode
         )
 
-        progressActor ! progress
+        progressActor ! progress.copy(scalaJsContent = None,
+                                      scalaJsSourceMapContent = None)
         snippetActor ! progress
       }
   }
 
-  private def extractProblems(line: String,
-                              lineOffset: Int): Option[List[api.Problem]] = {
-    val sbtProblems = extract[List[sbtapi.Problem]](line)
+  private def remapSourceMap(
+      snippetId: SnippetId
+  )(sourceMapRaw: String): String = {
+    try {
+      val sourceMap = uread[SourceMap](sourceMapRaw)
 
-    def toApi(p: sbtapi.Problem): api.Problem = {
-      val severity = p.severity match {
-        case sbtapi.Info => api.Info
-        case sbtapi.Warning => api.Warning
-        case sbtapi.Error => api.Error
+      val sourceMap0 =
+        sourceMap.copy(
+          sources = sourceMap.sources.map(
+            source =>
+              if (source.startsWith(ScalaTarget.Js.sourceUUID)) {
+                val host =
+                  if (production) "https://scastie.scala-lang.org"
+                  else "http://localhost:9000"
+
+                host + snippetId.url(ScalaTarget.Js.sourceFilename)
+              } else source
+          )
+        )
+
+      uwrite(sourceMap0)
+    } catch {
+      case e: Exception => {
+        e.printStackTrace()
+        sourceMapRaw
       }
-
-      api.Problem(severity, p.line.map(_ + lineOffset), p.message)
     }
+  }
 
-    sbtProblems.map(_.map(toApi))
+  private def extractProblems(line: String,
+                              lineOffset: Int): Option[List[Problem]] = {
+    val problems = extract[List[Problem]](line)
+
+    problems.map(
+      _.map(problem => problem.copy(line = problem.line.map(_ + lineOffset)))
+    )
   }
 
   def extractRuntimeError(line: String,
-                          lineOffset: Int): Option[api.RuntimeError] = {
-    extract[sbtapi.RuntimeError](line).map {
-      case sbtapi.RuntimeError(message, line, fullStack) =>
-        api.RuntimeError(message, line.map(_ + lineOffset), fullStack)
-    }
+                          lineOffset: Int): Option[RuntimeError] = {
+    extract[Option[RuntimeError]](line).flatMap(
+      _.map(error => error.copy(line = error.line.map(_ + lineOffset)))
+    )
   }
 
   private def extract[T: Reader](line: String,
@@ -291,4 +352,13 @@ class SbtActor(runTimeout: FiniteDuration, production: Boolean) extends Actor {
       case NonFatal(_) => None
     }
   }
+
+  private[SbtActor] case class SourceMap(
+      version: Int,
+      file: String,
+      mappings: String,
+      sources: List[String],
+      names: List[String],
+      lineCount: Int
+  )
 }

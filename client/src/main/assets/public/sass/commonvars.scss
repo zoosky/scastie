@@ -1,0 +1,63 @@
+// General Styles
+$font-family: 'Lato', sans-serif;
+$code-font-family: 'Fira Code', monospace;
+$text-size: 16px;
+$text-line-height: 18px;
+
+// Header
+$header-height: 70px;
+$editor-topbar-height: 60px;
+$editor-mobile-height: 48px;
+
+// Sidebar
+$sidebar-width: 160px;
+$sidebar-tablet-width: 60px;
+
+// Console
+$console-height: 300px;
+
+// Responsive
+$mobile-width: 480px;
+$tablet-width: 840px;
+
+$force-desktop-height: 1080px;
+$force-desktop-width: 1920px;
+
+@mixin media($grid) {
+  $_media: _retrieve-neat-setting($grid, media);
+  $_query: _neat-parse-media($_media);
+  @media #{$_query} {
+    $_default-neat-grid: $neat-grid;
+    $neat-grid: map-merge($neat-grid, $grid) !global;
+    @content;
+    $neat-grid: $_default-neat-grid !global;
+  }
+}
+
+@mixin tablet {
+  @media (min-width: #{$mobile-width}) and (max-width: #{$tablet-width}) {
+    .app:not(.force-desktop) {
+      @content;
+    }
+  }
+}
+
+@mixin phone {
+  @media only screen and (max-width: #{$mobile-width}) {
+    .app:not(.force-desktop) {
+      @content;
+    }
+  }
+}
+
+@include phone {
+  .app.force-desktop {
+    min-height: $force-desktop-height;
+    min-width: $force-desktop-width;
+    position: relative;
+
+    .editor-mobile {
+      display: none;
+    }
+  }
+}

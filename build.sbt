@@ -1,26 +1,60 @@
 import ScalaJSHelper._
-
 import org.scalajs.sbtplugin.JSModuleID
 import org.scalajs.sbtplugin.cross.CrossProject
+import org.scalajs.sbtplugin.ScalaJSPlugin.AutoImport.{jsEnv, scalaJSStage}
+import sbt.Keys._
 
-def akka(module: String) = "com.typesafe.akka" %% ("akka-" + module) % "2.4.16"
-
-lazy val akkaHttpVersion = "10.0.3"
-def akkaHttp = "com.typesafe.akka" %% "akka-http" % akkaHttpVersion
-def akkaHttpCore = "com.typesafe.akka" %% "akka-http-core" % akkaHttpVersion
+lazy val orgSettings = Seq(
+  organization := "org.scastie",
+  version := "0.22.6"
+)
 
 lazy val upickleVersion = "0.4.4"
 lazy val autowireVersion = "0.2.5"
 lazy val scalajsDomVersion = "0.9.1"
+lazy val scalaTestVersion = "3.0.1"
+lazy val akkaHttpVersion = "10.0.3"
 
-lazy val orgSettings = Seq(
-  organization := "org.scastie",
-  version := "0.11.0"
-)
+def akka(module: String) = "com.typesafe.akka" %% ("akka-" + module) % "2.4.16"
+
+def akkaHttp = "com.typesafe.akka" %% "akka-http" % akkaHttpVersion
+def akkaHttpCore = "com.typesafe.akka" %% "akka-http-core" % akkaHttpVersion
+
+lazy val scastie = project
+  .in(file("."))
+  .aggregate(
+    server,
+    balancer,
+    instrumentation,
+    sbtRunner,
+    codemirror,
+    client,
+    runtimeDotty,
+    sbtScastie,
+    runtimeScala210JVM,
+    runtimeScala210JS,
+    runtimeScala211JVM,
+    runtimeScala211JS,
+    runtimeScala212JVM,
+    runtimeScala212JS,
+    // runtimeScala213JVM,
+    // runtimeScala213JS,
+    api210JVM,
+    api210JS,
+    api211JVM,
+    api211JS,
+    api212JVM,
+    api212JS
+    // api213JVM,
+    // api213JS
+  )
+  .settings(baseSettings)
+  .settings(Deployment.settings(server, sbtRunner))
+  .settings(addCommandAlias("drone", ";test ;server/universal:packageBin"))
 
 lazy val baseSettings = Seq(
-    scalaVersion := "2.11.8",
-    scalacOptions := {
+  scalaVersion := "2.12.2",
+  scalacOptions := {
     val extraOptions =
       if (scalaBinaryVersion.value != "2.10") {
         Seq("-Ywarn-unused-import")
@@ -39,17 +73,41 @@ lazy val baseSettings = Seq(
       "-Ywarn-value-discard"
     ) ++ extraOptions
   },
-    console := (console in Test).value,
-    scalacOptions in (Test, console) -= "-Ywarn-unused-import",
-    scalacOptions in (Compile, consoleQuick) -= "-Ywarn-unused-import"
-  ) ++ orgSettings
+  console := (console in Test).value,
+  scalacOptions in (Test, console) -= "-Ywarn-unused-import",
+  scalacOptions in (Compile, consoleQuick) -= "-Ywarn-unused-import"
+) ++ orgSettings
 
 lazy val loggingAndTest =
   libraryDependencies ++= Seq(
     "ch.qos.logback" % "logback-classic" % "1.2.1",
     "com.typesafe.scala-logging" %% "scala-logging" % "3.5.0",
-    "org.scalatest" %% "scalatest" % "3.0.1" % "test"
+    "org.scalatest" %% "scalatest" % scalaTestVersion % "test"
   )
+
+lazy val remapSourcMap =
+  scalacOptions ++= {
+    val ver = version.value
+    val fromScastie = (baseDirectory in LocalRootProject).value.toURI.toString
+    val toScastie =
+      s"https://raw.githubusercontent.com/scalacenter/scastie/v$ver/"
+
+    Map(
+      fromScastie ->
+        toScastie,
+      // v0.4.4
+      "file:///Users/lihaoyi/upickle-pprint/" ->
+        "https://raw.githubusercontent.com/lihaoyi/upickle-pprint/b20c79ad571842eae32a442c6a14627898e262b4/",
+      // v0.2.3
+      "file:///Users/lihaoyi/fansi" ->
+        "https://raw.githubusercontent.com/lihaoyi/fansi/8b2bc6797be1f2d3e63d9553588534b9b34e97dc/"
+
+      // file:///home/lars/proj/lihaoyi/sourcecode/sourcecode/shared/src/main/scala/sourcecode/SourceContext.scala
+    ).map {
+      case (from, to) =>
+        s"-P:scalajs:mapSourceURI:$from->$to"
+    }.toList
+  }
 
 lazy val utils = project
   .in(file("utils"))
@@ -57,7 +115,7 @@ lazy val utils = project
   .settings(
     libraryDependencies += akka("actor")
   )
-  .dependsOn(api211JVM)
+  .dependsOn(api212JVM)
 
 lazy val runnerRuntimeDependencies = Seq(
   runtimeScala210JVM,
@@ -66,15 +124,17 @@ lazy val runnerRuntimeDependencies = Seq(
   runtimeScala211JS,
   runtimeScala212JVM,
   runtimeScala212JS,
+  // runtimeScala213JVM,
+  // runtimeScala213JS,
   api210JVM,
   api210JS,
   api211JVM,
   api211JS,
   api212JVM,
   api212JS,
+  // api213JVM,
+  // api213JS,
   runtimeDotty,
-  sbtApi210,
-  sbtApi211,
   sbtScastie
 ).map(publishLocal in _)
 
@@ -90,7 +150,7 @@ lazy val sbtRunner = project
       akka("testkit") % Test,
       akka("remote"),
       akka("slf4j"),
-      "com.geirsson" %% "scalafmt-core" % "0.5.7"
+      "com.geirsson" %% "scalafmt-core" % "0.7.0-RC1"
     ),
     buildInfoKeys := Seq[BuildInfoKey](version),
     buildInfoPackage := "com.olegych.scastie.buildinfo",
@@ -109,23 +169,31 @@ lazy val sbtRunner = project
       }
       case x => MergeStrategy.first
     },
-    dockerfile in docker := Def.task {
-      val ivy = ivyPaths.value.ivyHome.get
+    test in assembly := {},
+    dockerfile in docker := Def
+      .task {
+        val ivy = ivyPaths.value.ivyHome.get
 
-      val org = organization.value
-      val artifact = assembly.value
-      val artifactTargetPath = s"/app/${artifact.name}"
+        val org = organization.value
+        val artifact = assembly.value
+        val artifactTargetPath = s"/app/${artifact.name}"
 
-      new Dockerfile {
-        from("scalacenter/scastie-docker-sbt:0.0.9")
+        new Dockerfile {
+          from("scalacenter/scastie-docker-sbt:0.0.22")
 
-        add(ivy / "local" / org, s"/root/.ivy2/local/$org")
+          add(ivy / "local" / org, s"/root/.ivy2/local/$org")
 
-        add(artifact, artifactTargetPath)
+          add(artifact, artifactTargetPath)
 
-        entryPoint("java", "-Xmx256M", "-Xms256M", "-jar", artifactTargetPath)
+          entryPoint("java",
+                     "-Xmx256M",
+                     "-Xms256M",
+                     "-jar",
+                     artifactTargetPath)
+        }
       }
-    }.dependsOn(runnerRuntimeDependencies: _*).value,
+      .dependsOn(runnerRuntimeDependencies: _*)
+      .value,
     test in Test := (test in Test)
       .dependsOn(runnerRuntimeDependencies: _*)
       .value,
@@ -136,7 +204,7 @@ lazy val sbtRunner = project
       .dependsOn(runnerRuntimeDependencies: _*)
       .evaluated
   )
-  .dependsOn(sbtApi211, api211JVM, instrumentation, utils)
+  .dependsOn(api212JVM, instrumentation, utils)
   .enablePlugins(sbtdocker.DockerPlugin, BuildInfoPlugin)
 
 lazy val server = project
@@ -144,7 +212,6 @@ lazy val server = project
   .settings(loggingAndTest)
   .settings(packageScalaJS(client))
   .settings(
-    JsEngineKeys.engineType := JsEngineKeys.EngineType.Node,
     reStart := reStart.dependsOn(WebKeys.assets in (client, Assets)).evaluated,
     (packageBin in Universal) := (packageBin in Universal)
       .dependsOn(WebKeys.assets in (client, Assets))
@@ -161,7 +228,7 @@ lazy val server = project
     )
   )
   .enablePlugins(SbtWeb, JavaServerAppPackaging)
-  .dependsOn(api211JVM, utils, balancer)
+  .dependsOn(api212JVM, utils, balancer)
 
 lazy val balancer = project
   .settings(baseSettings)
@@ -172,29 +239,7 @@ lazy val balancer = project
       akkaHttpCore
     )
   )
-  .dependsOn(api211JVM, utils)
-
-lazy val scastie = project
-  .in(file("."))
-  .aggregate(
-    server,
-    balancer,
-    instrumentation,
-    sbtRunner,
-    codemirror,
-    client,
-    runtimeDotty,
-    sbtApi210,
-    sbtApi211,
-    sbtScastie,
-    runtimeScala211JVM,
-    runtimeScala211JS,
-    api211JVM,
-    api211JS
-  )
-  .settings(orgSettings)
-  .settings(Deployment.settings(server, sbtRunner))
-  .settings(addCommandAlias("drone", ";test ;server/universal:packageBin"))
+  .dependsOn(api212JVM, utils, instrumentation)
 
 /* codemirror is a facade to the javascript rich editor codemirror*/
 lazy val codemirror = project
@@ -224,48 +269,63 @@ lazy val codemirror = project
         "mode/clike/clike"
       ).map(codemirrorD)
     },
-    libraryDependencies += "org.scala-js" %%% "scalajs-dom" % scalajsDomVersion
+    libraryDependencies += "org.scala-js" %%% "scalajs-dom" % scalajsDomVersion,
+    jsEnv in Test := new PhantomJS2Env(scalaJSPhantomJSClassLoader.value)
   )
   .enablePlugins(ScalaJSPlugin)
 
-/* frontend code */
-def react(artifact: String, name: String): JSModuleID =
-  "org.webjars.bower" % "react" % "15.3.2" % "compile" / s"$artifact.js" minified s"$artifact.min.js" commonJSName name
+def react(artifact: String,
+          name: String,
+          configuration: Configuration = Compile): JSModuleID =
+  "org.webjars.bower" % "react" % "15.5.4" % configuration / s"$artifact.js" minified s"$artifact.min.js" commonJSName name
 
-def react(artifact: String, name: String, depends: String): JSModuleID =
-  react(artifact, name).dependsOn(s"$depends.js")
+def reactWithDepends(artifact: String,
+                     name: String,
+                     depends: String,
+                     configuration: Configuration = Compile): JSModuleID =
+  react(artifact, name, configuration).dependsOn(s"$depends.js")
 
 lazy val client = project
   .settings(baseSettings)
   .settings(
-    JsEngineKeys.engineType := JsEngineKeys.EngineType.Node,
     skip in packageJSDependencies := false,
-    test := {},
     jsDependencies ++= Seq(
       react("react-with-addons", "React"),
-      react("react-dom", "ReactDOM", "react-with-addons"),
-      react("react-dom-server", "ReactDOMServer", "react-dom")
+      reactWithDepends("react-dom", "ReactDOM", "react-with-addons"),
+      reactWithDepends("react-dom-server", "ReactDOMServer", "react-dom"),
+      reactWithDepends("react-dom", "ReactDOM", "react-with-addons", Test),
+      reactWithDepends("react-dom-server",
+                       "ReactDOMServer",
+                       "react-dom",
+                       Test),
+      RuntimeDOM % Test
     ),
     libraryDependencies ++= Seq(
-      "com.github.japgolly.scalajs-react" %%% "extra" % "0.11.2",
-      "org.webjars.bower" % "open-iconic" % "1.1.1",
+      "com.github.japgolly.scalajs-react" %%% "extra" % "1.0.0",
+      "com.github.japgolly.scalajs-react" %%% "test" % "1.0.0" % Test,
+      "org.scalatest" %%% "scalatest" % scalaTestVersion % Test,
       "org.webjars" % "font-awesome" % "4.7.0",
-      "org.webjars.npm" % "firacode" % "1.205.0"
-    )
+      "org.webjars.npm" % "firacode" % "1.205.0",
+      "org.webjars.bower" % "bourbon" % "3.1.8",
+      "org.webjars.bower" % "neat" % "1.8.0"
+    ),
+    requiresDOM := true,
+    scalaJSStage in Test := FastOptStage,
+    jsEnv in Test := new PhantomJS2Env(scalaJSPhantomJSClassLoader.value)
   )
   .enablePlugins(ScalaJSPlugin, SbtWeb)
-  .dependsOn(codemirror, api211JS)
+  .dependsOn(codemirror, api212JS)
 
 lazy val instrumentation = project
   .settings(baseSettings)
   .settings(loggingAndTest)
   .settings(
     libraryDependencies ++= Seq(
-      "org.scalameta" %% "scalameta" % "1.6.0",
+      "org.scalameta" %% "scalameta" % "1.7.0",
       "com.googlecode.java-diff-utils" % "diffutils" % "1.3.0" % Test
     )
   )
-  .dependsOn(api211JVM)
+  .dependsOn(api212JVM, utils)
 
 def crossDir(projectId: String) = file(".cross/" + projectId)
 def dash(name: String) = name.replaceAllLiterally(".", "-")
@@ -276,7 +336,7 @@ def api(scalaV: String) = {
   val projectId = s"$projectName-${dash(scalaV)}"
   CrossProject(id = projectId,
                base = crossDir(projectId),
-               crossType = CrossType.Full)
+               crossType = CrossType.Pure)
     .settings(baseSettings)
     .settings(
       buildInfoKeys := Seq[BuildInfoKey](
@@ -301,12 +361,14 @@ def api(scalaV: String) = {
       test := {},
       libraryDependencies += "org.scala-js" %%% "scalajs-dom" % scalajsDomVersion
     )
+    .jsSettings(remapSourcMap)
     .enablePlugins(BuildInfoPlugin)
 }
 
 val api210 = api("2.10.6")
-val api211 = api("2.11.8")
-val api212 = api("2.12.1")
+val api211 = api("2.11.11")
+val api212 = api("2.12.2")
+// val api213 = api("2.13.0-M1")
 
 lazy val api210JVM = api210.jvm
 lazy val api210JS = api210.js
@@ -314,6 +376,8 @@ lazy val api211JVM = api211.jvm
 lazy val api211JS = api211.js
 lazy val api212JVM = api212.jvm
 lazy val api212JS = api212.js
+// lazy val api213JVM = api213.jvm
+// lazy val api213JS = api213.js
 
 /* runtime* pretty print values and type */
 def runtimeScala(scalaV: String, apiProject: CrossProject) = {
@@ -321,24 +385,32 @@ def runtimeScala(scalaV: String, apiProject: CrossProject) = {
   val projectId = s"$projectName-${dash(scalaV)}"
   CrossProject(id = projectId,
                base = crossDir(projectId),
-               crossType = CrossType.Pure)
+               crossType = CrossType.Full)
     .settings(baseSettings)
     .settings(
       scalaVersion := scalaV,
       moduleName := projectName,
-      unmanagedSourceDirectories in Compile += (baseDirectory in ThisBuild).value / projectName / "src" / "main" / "scala",
       libraryDependencies ++= Seq(
         "com.lihaoyi" %%% "upickle" % upickleVersion,
         "com.lihaoyi" %%% "pprint" % upickleVersion
-      )
+      ),
+      unmanagedSourceDirectories in Compile += (baseDirectory in ThisBuild).value / projectName / "shared" / "src" / "main" / "scala"
     )
-    .jsSettings(test := {})
+    .jsSettings(remapSourcMap)
+    .jsSettings(
+      test := {},
+      unmanagedSourceDirectories in Compile += (baseDirectory in ThisBuild).value / projectName / "js" / "src" / "main" / "scala"
+    )
+    .jvmSettings(
+      unmanagedSourceDirectories in Compile += (baseDirectory in ThisBuild).value / projectName / "jvm" / "src" / "main" / "scala"
+    )
     .dependsOn(apiProject)
 }
 
 val runtimeScala210 = runtimeScala("2.10.6", api210)
-val runtimeScala211 = runtimeScala("2.11.8", api211)
-val runtimeScala212 = runtimeScala("2.12.1", api212)
+val runtimeScala211 = runtimeScala("2.11.11", api211)
+val runtimeScala212 = runtimeScala("2.12.2", api212)
+// val runtimeScala213 = runtimeScala("2.13.0-M1", api213)
 
 lazy val runtimeScala210JVM = runtimeScala210.jvm
 lazy val runtimeScala210JS = runtimeScala210.js
@@ -346,30 +418,20 @@ lazy val runtimeScala211JVM = runtimeScala211.jvm
 lazy val runtimeScala211JS = runtimeScala211.js
 lazy val runtimeScala212JVM = runtimeScala212.jvm
 lazy val runtimeScala212JS = runtimeScala212.js
+// lazy val runtimeScala213JVM = runtimeScala213.jvm
+// lazy val runtimeScala213JS = runtimeScala213.js
 
 lazy val runtimeDotty = project
   .in(file("runtime-dotty"))
   .settings(orgSettings)
   .enablePlugins(DottyPlugin)
   .settings(
-    moduleName := "runtime-dotty"
+    scalaVersion := dottyLatestNightlyBuild
+      .getOrElse("0.1.1-bin-20170509-7a3f880-NIGHTLY"),
+    moduleName := "runtime-dotty",
+    projectDependencies ~= (_.map(_.withDottyCompat()))
   )
   .dependsOn(api211JVM)
-
-/* sbtApi is for the communication between sbt and the sbt-runner */
-def sbtApi(scalaV: String) = {
-  val projectId = s"sbt-api-${dash(scalaV)}"
-  Project(id = projectId, base = crossDir(projectId))
-    .settings(orgSettings)
-    .settings(
-      unmanagedSourceDirectories in Compile += (baseDirectory in ThisBuild).value / "sbt-api" / "src" / "main",
-      scalaVersion := scalaV,
-      libraryDependencies += "com.lihaoyi" %% "upickle" % upickleVersion
-    )
-}
-
-lazy val sbtApi210 = sbtApi("2.10.6")
-lazy val sbtApi211 = sbtApi("2.11.8")
 
 lazy val sbtScastie = project
   .in(file("sbt-scastie"))
@@ -379,4 +441,4 @@ lazy val sbtScastie = project
     scalaVersion := "2.10.6",
     sbtPlugin := true
   )
-  .dependsOn(sbtApi210)
+  .dependsOn(api210JVM)

@@ -7,8 +7,6 @@ import java.nio.file._
 
 import scala.collection.JavaConverters._
 
-import System.{lineSeparator => nl}
-
 import org.scalatest.FunSuite
 
 class InstrumentSpecs extends FunSuite {
@@ -22,11 +20,17 @@ class InstrumentSpecs extends FunSuite {
   }
 
   testFiles.foreach { path =>
-    test(path.toString) {
-      val original = slurp(path.resolve("original.scala"))
-      val expected = slurp(path.resolve("instrumented.scala"))
+    val dirName = path.getFileName.toString
 
-      val Right(obtained) = Instrument(original)
+    test(dirName) {
+      val original = slurp(path.resolve("original.scala")).get
+      val expected = slurp(path.resolve("instrumented.scala")).get
+
+      val target =
+        if (dirName == "scalajs") ScalaTarget.Js.default
+        else ScalaTarget.Jvm.default
+
+      val Right(obtained) = Instrument(original, target)
 
       Diff.assertNoDiff(obtained, expected)
     }
@@ -52,9 +56,9 @@ class InstrumentSpecs extends FunSuite {
       Instrument("trait Foo; object Main extends Foo with App { }")
   }
 
-  test("unsupported dialect"){
-   val Left(UnsupportedDialect) =
-      Instrument("1", ScalaTarget.Jvm("2.13.0")) 
+  test("unsupported dialect") {
+    val Left(UnsupportedDialect) =
+      Instrument("1", ScalaTarget.Jvm("2.13.0"))
   }
 
   test("extends App primary fails") {
@@ -66,12 +70,6 @@ class InstrumentSpecs extends FunSuite {
   }
 
   test("bug #83") {
-    // requires scalameta 1.6.0 => requires scalafmt based on 1.6.0
-    // val Right(_) = Instrument("val answer: 42 = 42", ScalaTarget.Dotty)
-    pending
-  }
-
-  private def slurp(path: Path): String = {
-    Files.readAllLines(path).toArray.mkString(nl)
+    val Right(_) = Instrument("val answer: 42 = 42", ScalaTarget.Dotty)
   }
 }

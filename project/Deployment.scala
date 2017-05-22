@@ -25,7 +25,8 @@ object Deployment {
 
   lazy val deployQuick = taskKey[Unit](
     "Deploy server and sbt instances without building server " +
-      "zip and pushing docker images")
+      "zip and pushing docker images"
+  )
 
   lazy val deployServerQuick =
     taskKey[Unit]("Deploy server without building server zip")
@@ -76,7 +77,8 @@ object Deployment {
     }
 
   private def deploymentTask(
-      sbtRunner: Project): Def.Initialize[Task[Deployment]] =
+      sbtRunner: Project
+  ): Def.Initialize[Task[Deployment]] =
     Def.task {
       new Deployment(
         rootFolder = (baseDirectory in ThisBuild).value,
@@ -107,8 +109,8 @@ class Deployment(rootFolder: File,
   def deployServer(serverZip: Path): Unit = {
     logger.info("Generate server script")
 
-    val serverScript = Files.createTempFile("server", ".sh")
-    Files.setPosixFilePermissions(serverScript, executablePermissions)
+    val serverScriptDir = Files.createTempDirectory("server")
+    val serverScript = serverScriptDir.resolve("server.sh")
 
     val applicationRootConfig = "application.conf"
     val productionConfigFileName = productionConfig.getFileName
@@ -121,9 +123,6 @@ class Deployment(rootFolder: File,
           |whoami
           |
           |kill -9 `cat RUNNING_PID`
-          |rm -rf server
-          |rm server.log
-          |rm server*.sh
           |
           |unzip -d server $serverZipFileName
           |mv server/*/* server/
@@ -134,10 +133,9 @@ class Deployment(rootFolder: File,
           |""".stripMargin
 
     Files.write(serverScript, content.getBytes)
+    Files.setPosixFilePermissions(serverScript, executablePermissions)
 
     logger.info("Deploy servers")
-
-    def rsyncServer(file: Path) = rsync(file, userName, serverHostname, logger)
 
     val scastieSecrets = "scastie-secrets"
     val secretFolder = rootFolder / ".." / scastieSecrets
@@ -165,8 +163,8 @@ class Deployment(rootFolder: File,
     val dockerNamespace = dockerImage.namespace.get
     val dockerRepository = dockerImage.repository
 
-    val sbtScript = Files.createTempFile("sbt", ".sh")
-    Files.setPosixFilePermissions(sbtScript, executablePermissions)
+    val sbtScriptDir = Files.createTempDirectory("sbt")
+    val sbtScript = sbtScriptDir.resolve("sbt.sh")
 
     logger.info("Generate sbt script")
 
@@ -174,7 +172,7 @@ class Deployment(rootFolder: File,
 
     val dockerImagePath = s"$dockerNamespace/$dockerRepository:$version"
 
-    val content =
+    val sbtScriptContent =
       s"""|#!/usr/bin/env bash
           |
           |whoami
@@ -183,8 +181,6 @@ class Deployment(rootFolder: File,
           |docker kill $$(docker ps -q)
           |
           |docker rmi -f $dockerImagePath
-          |
-          |rm sbt*.sh
           |
           |# Run all instances
           |for i in `seq $runnersPortsStart $runnersPortsEnd`;
@@ -199,13 +195,28 @@ class Deployment(rootFolder: File,
           |done
           |""".stripMargin
 
-    Files.write(sbtScript, content.getBytes)
-
+    Files.write(sbtScript, sbtScriptContent.getBytes)
+    Files.setPosixFilePermissions(sbtScript, executablePermissions)
     val scriptFileName = sbtScript.getFileName
-    val uri = userName + "@" + runnersHostname
-    Process("rm -rf sbt*.sh") ! logger
-    Process(s"rsync $sbtScript $uri:$scriptFileName") ! logger
-    Process(s"ssh $uri ./$scriptFileName") ! logger
+
+    val runnerUri = userName + "@" + runnersHostname
+    val serverUri = userName + "@" + serverHostname
+
+    val proxyScript = sbtScriptDir.resolve("proxy.sh")
+    val proxyScriptFileName = proxyScript.getFileName
+
+    val proxyScriptContent =
+      s"""|rm proxy*.sh
+          |rsync $scriptFileName $runnerUri:$scriptFileName
+          |ssh $runnerUri ./$scriptFileName
+          |rm $scriptFileName""".stripMargin
+
+    Files.write(proxyScript, proxyScriptContent.getBytes)
+    Files.setPosixFilePermissions(proxyScript, executablePermissions)
+
+    rsyncServer(sbtScript)
+    rsyncServer(proxyScript)
+    Process(s"ssh $serverUri ./$proxyScriptFileName") ! logger
   }
 
   private val userName = "scastie"
@@ -237,4 +248,7 @@ class Deployment(rootFolder: File,
     val fileName = file.getFileName
     Process(s"rsync $file $uri:$fileName") ! logger
   }
+
+  private def rsyncServer(file: Path) =
+    rsync(file, userName, serverHostname, logger)
 }

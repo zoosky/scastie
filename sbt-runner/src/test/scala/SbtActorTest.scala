@@ -1,4 +1,5 @@
 package com.olegych.scastie
+
 package sbt
 
 import api._
@@ -32,7 +33,8 @@ class SbtActorTest()
         assert(
           progress.instrumentations == List(
             Instrumentation(Position(0, 5), Value("2", "Int"))
-          ))
+          )
+        )
       }
 
       gotInstrumentation
@@ -40,17 +42,22 @@ class SbtActorTest()
   }
 
   test("capture runtime errors") {
-    run("1/0")(progress => {
-      val gotRuntimeError = progress.runtimeError.nonEmpty
+    run("1/0")(
+      progress => {
+        println()
+        println(progress.runtimeError)
+        println()
+        val gotRuntimeError = progress.runtimeError.nonEmpty
 
-      if (gotRuntimeError) {
-        val error = progress.runtimeError.get
-        assert(error.message == "java.lang.ArithmeticException: / by zero")
-        assert(error.line == Some(1))
-        assert(error.fullStack.size > 0)
+        if (gotRuntimeError) {
+          val error = progress.runtimeError.get
+          assert(error.message == "java.lang.ArithmeticException: / by zero")
+          assert(error.line == Some(1))
+          assert(error.fullStack.size > 0)
+        }
+        gotRuntimeError
       }
-      gotRuntimeError
-    })
+    )
   }
 
   test("capture user output separately from sbt output") {
@@ -65,7 +72,9 @@ class SbtActorTest()
 
   test("force program mode when an entry point is present") {
     val message = "Hello"
-    run(s"""object Main { def main(args: Array[String]): Unit = println("$message") }"""){progress =>
+    run(
+      s"""object Main { def main(args: Array[String]): Unit = println("$message") }"""
+    ) { progress =>
       assert(progress.forcedProgramMode)
 
       val gotHelloMessage = progress.userOutput == Some(message)
@@ -74,15 +83,17 @@ class SbtActorTest()
       gotHelloMessage
     }
   }
-  
+
   test("report unsupported dialects") {
-    run("1+1", ScalaTarget.Jvm("10.10.10"))(assertCompilationInfo{ info =>
-      assert(info.message == "The worksheet mode does not support this Scala target")
+    run("1+1", ScalaTarget.Jvm("10.10.10"))(assertCompilationInfo { info =>
+      assert(
+        info.message == "The worksheet mode does not support this Scala target"
+      )
     })
   }
 
   test("repport parsing error") {
-    run("{")(assertCompilationInfo{ info =>
+    run("{")(assertCompilationInfo { info =>
       assert(info.message == "} expected but end of file found")
       assert(info.line == Some(1))
     })
@@ -93,19 +104,27 @@ class SbtActorTest()
     run(dotty)(_.instrumentations.nonEmpty)
   }
 
-  test("Encoding issues #100"){
-    run("""println("€")"""){progress =>
+  test("Encoding issues #100") {
+    run("""println("€")""") { progress =>
       val gotHelloMessage = progress.userOutput == Some("€")
       if (!gotHelloMessage) assert(progress.userOutput == None)
       gotHelloMessage
     }
   }
 
-  def assertCompilationInfo(infoAssert: Problem => Any)(progress: SnippetProgress): Boolean = {
+  test("Scala.js support") {
+    val scalaJs =
+      Inputs.default.copy(code = "1 + 1", target = ScalaTarget.Js.default)
+    run(scalaJs)(_.done)
+  }
+
+  def assertCompilationInfo(
+      infoAssert: Problem => Any
+  )(progress: SnippetProgress): Boolean = {
 
     val gotCompilationError = progress.compilationInfos.nonEmpty
 
-    if(gotCompilationError) {
+    if (gotCompilationError) {
       val info = progress.compilationInfos.head
       infoAssert(info)
     }
@@ -117,9 +136,10 @@ class SbtActorTest()
     TestKit.shutdownActorSystem(system)
   }
 
-  private val timeout = 3.seconds
+  private val timeout = 20.seconds
   private val sbtActor = TestActorRef(
-    new SbtActor(timeout, production = false))
+    new SbtActor(timeout, production = false)
+  )
   private var currentId = 0
   private def snippetId = {
     val t = currentId
@@ -134,10 +154,10 @@ class SbtActorTest()
     sbtActor ! SbtTask(snippetId, inputs, ip, None, progressActor.ref)
 
     val totalTimeout =
-      if (firstRun) timeout + 10.second
+      if (firstRun) timeout + 20.second
       else timeout
 
-    progressActor.fishForMessage(totalTimeout) {
+    progressActor.fishForMessage(totalTimeout + 5.seconds) {
       case progress: SnippetProgress => {
         val fishResult = fish(progress)
         if (progress.done && !fishResult)
@@ -148,8 +168,9 @@ class SbtActorTest()
 
     firstRun = false
   }
-  private def run(code: String, 
-                  target: ScalaTarget = ScalaTarget.Jvm.default)(fish: SnippetProgress => Boolean): Unit = {
+  private def run(code: String, target: ScalaTarget = ScalaTarget.Jvm.default)(
+      fish: SnippetProgress => Boolean
+  ): Unit = {
     run(Inputs.default.copy(code = code, target = target))(fish)
   }
 }

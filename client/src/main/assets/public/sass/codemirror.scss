@@ -1,0 +1,122 @@
+.CodeMirror, .CodeMirror-scroll {
+  height: 100%;
+}
+
+.CodeMirror-simplescroll-vertical {
+  width: 10px;
+}
+
+.CodeMirror-simplescroll-horizontal {
+  height: 10px;
+}
+
+.CodeMirror-simplescroll-vertical,
+.CodeMirror-simplescroll-horizontal { 
+  background-color: transparent;
+  div {
+    border: none;
+  }
+}
+
+.CodeMirror-scroll {
+  overflow: auto;
+}
+
+$margin: 24px;
+.CodeMirror-lines {
+  padding: $margin;
+  .cm-tab {
+    visibility: hidden;
+  }
+}
+.CodeMirror-linenumber{
+  margin-left: -$margin;
+}
+.CodeMirror-linewidget .line,
+.CodeMirror-linewidget .compilation-info,
+.CodeMirror-linewidget .runtime-error,
+.CodeMirror-widget .fold {
+  margin-left: -($margin + 4px);
+  width: calc(100% - #{$margin + 4px});
+
+  padding: $margin;
+  white-space: pre-wrap;
+
+  p {
+    display: inline-block;
+  }
+
+  p, pre, h1, h2, h3, h4, h5, h6 {
+    padding: 0;
+    margin: 0;
+  }
+
+  ul, ol {
+    margin: 0
+  }
+
+  .short {
+    padding: 1px 5px 1px 5px;
+  }
+  .block {
+    display: block;
+  }
+
+  pre {
+    padding: 10px 0px 10px $margin/2;
+    display: inline-block;
+  }
+}
+
+.CodeMirror {
+  // emphasis on not parsed (){}
+  .CodeMirror-code > pre > span,
+  .CodeMirror-code > div > pre > span,
+  .CodeMirror-linewidget pre {
+    font-weight: bold;
+    & > * {
+      font-weight: normal;
+    }
+  }
+
+  .CodeMirror-linewidget {
+    overflow: visible !important;
+
+    .runtime-error i,
+    .compilation-info.error i {
+      color: red;
+    }
+    .runtime-error,
+    .compilation-info {
+      &.warning i {
+        color: yellow;
+      }
+
+      pre {
+        padding-top: 0;
+      }
+      i, pre {
+        display: inline-block;
+      }
+      i {
+        vertical-align: top;
+        font-size: 20px;
+      }
+    }
+
+    .inline {
+      border-radius: 2px;
+      position: absolute;
+      bottom: 0;
+      overflow: hidden;
+      margin-left: 20px;
+      padding-left: 5px;
+    }
+
+    i {
+      margin-left: 16px;
+      margin-right: 6px;
+      font-size: 12px;
+    }
+  }
+}

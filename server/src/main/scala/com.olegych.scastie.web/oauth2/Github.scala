@@ -30,9 +30,6 @@ class Github(implicit system: ActorSystem, materializer: ActorMaterializer)
   private val clientSecret = config.getString("client-secret")
   private val redirectUri = config.getString("uri") + "/callback"
 
-  private val poolClientFlow =
-    Http().cachedHostConnectionPoolHttps[HttpRequest]("api.github.com")
-
   def getUserWithToken(token: String): Future[User] = info(token)
   def getUserWithOauth2(code: String): Future[User] = {
     def access = {
@@ -46,11 +43,14 @@ class Github(implicit system: ActorSystem, materializer: ActorMaterializer)
                 "client_secret" -> clientSecret,
                 "code" -> code,
                 "redirect_uri" -> redirectUri
-              )),
+              )
+            ),
             headers = List(Accept(MediaTypes.`application/json`))
-          ))
-        .flatMap(response =>
-          Unmarshal(response).to[AccessToken].map(_.access_token))
+          )
+        )
+        .flatMap(
+          response => Unmarshal(response).to[AccessToken].map(_.access_token)
+        )
     }
 
     access.flatMap(info)

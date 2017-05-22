@@ -1,11 +1,7 @@
 package com.olegych.scastie
 package sbt
 
-import buildinfo.BuildInfo.{version => buildVersion}
-
 import api._
-
-import com.typesafe.config.ConfigFactory
 
 import scala.util.Random
 import System.{lineSeparator => nl}
@@ -15,10 +11,7 @@ import java.nio.file._
 import java.io.{IOException, BufferedReader, InputStreamReader}
 import java.nio.charset.StandardCharsets
 
-class Sbt() {
-  private val config =
-    ConfigFactory.load().getConfig("com.olegych.scastie.sbt")
-  private val production = config.getBoolean("production")
+class Sbt(defaultConfig: Inputs) {
 
   private val log = LoggerFactory.getLogger(getClass)
 
@@ -29,23 +22,34 @@ class Sbt() {
   private var currentSbtConfig = ""
   private var currentSbtPluginConfig = ""
 
-  private val sbtConfigFile = sbtDir.resolve("config.sbt")
+  private val buildFile = sbtDir.resolve("build.sbt")
   private val prompt = s"""shellPrompt := (_ => "$uniqueId\\n")"""
-  write(sbtConfigFile, prompt)
 
   private val projectDir = sbtDir.resolve("project")
   Files.createDirectories(projectDir)
 
-  write(projectDir.resolve("build.properties"), s"sbt.version = 0.13.13")
+  write(projectDir.resolve("build.properties"), s"sbt.version = 0.13.15")
 
   private val pluginFile = projectDir.resolve("plugins.sbt")
-  write(pluginFile,
-        s"""|addSbtPlugin("org.scastie" % "sbt-scastie" % "$buildVersion")
-            |addSbtPlugin("io.get-coursier" % "sbt-coursier" % "1.0.0-M15")""".stripMargin)
+
+  private def setup(): Unit = {
+    setConfig(defaultConfig)
+    setPlugins(defaultConfig)
+  }
+
+  setup()
 
   private val codeFile = sbtDir.resolve("src/main/scala/main.scala")
 
   Files.createDirectories(codeFile.getParent)
+
+  def scalaJsContent(): Option[String] = {
+    slurp(sbtDir.resolve(ScalaTarget.Js.targetFilename))
+  }
+
+  def scalaJsSourceMapContent(): Option[String] = {
+    slurp(sbtDir.resolve(ScalaTarget.Js.sourceMapFilename))
+  }
 
   private val (process, fin, fout) = {
 
@@ -64,37 +68,56 @@ class Sbt() {
 
     val process = builder.start()
 
-    val in = new BufferedReader(new InputStreamReader(process.getInputStream, StandardCharsets.UTF_8))
+    val in = new BufferedReader(
+      new InputStreamReader(process.getInputStream, StandardCharsets.UTF_8)
+    )
 
     (process, process.getOutputStream, in)
   }
 
-  private def collect(lineCallback: (String, Boolean, Boolean) => Unit,
-                      reload: Boolean): Unit = {
+  private def collect(
+      lineCallback: (String, Boolean, Boolean, Boolean) => Unit,
+      reload: Boolean
+  ): Boolean = {
     val chars = new collection.mutable.Queue[Character]()
     var read = 0
-    var prompt = false
-    while (read != -1 && !prompt) {
+    var done = false
+    var sbtError = false
+
+    while (read != -1 && !done) {
       read = fout.read()
       if (read == 10) {
         val line = chars.mkString
-        prompt = line == uniqueId
+
+        val prompt = line == uniqueId
+        sbtError = line == "[error] Type error in expression"
+        done = prompt || sbtError
 
         log.info(line)
 
-        lineCallback(line, prompt, reload)
+        lineCallback(line, done, sbtError, reload)
         chars.clear()
       } else {
         chars += read.toChar
       }
     }
+    if (sbtError) {
+      setup()
+      process("r", noop, reload = false)
+    }
+
+    sbtError
   }
 
-  collect((_, _, _) => (), reload = false)
+  type LineCallback = (String, Boolean, Boolean, Boolean) => Unit
+  val noop: LineCallback =
+    (_, _, _, _) => ()
+
+  collect(noop, reload = false)
 
   private def process(command: String,
-                      lineCallback: (String, Boolean, Boolean) => Unit,
-                      reload: Boolean): Unit = {
+                      lineCallback: LineCallback,
+                      reload: Boolean): Boolean = {
     fin.write((command + nl).getBytes)
     fin.flush()
     collect(lineCallback, reload)
@@ -114,39 +137,63 @@ class Sbt() {
       inputs.sbtPluginsConfig != currentSbtPluginConfig
 
   def exit(): Unit = {
-    process("exit", (_, _, _) => (), reload = false)
+    process("exit", noop, reload = false)
+    ()
+  }
+
+  private def writeFile(path: Path, content: String): Unit = {
+    if (Files.exists(path)) {
+      Files.delete(path)
+    }
+
+    Files.write(path, content.getBytes, StandardOpenOption.CREATE_NEW)
+
+    ()
+  }
+
+  private def setPlugins(inputs: Inputs): Unit = {
+    writeFile(pluginFile, inputs.sbtPluginsConfig)
+    currentSbtPluginConfig = inputs.sbtPluginsConfig
+  }
+
+  private def setConfig(inputs: Inputs): Unit = {
+    writeFile(buildFile, prompt + nl + inputs.sbtConfig)
+    currentSbtConfig = inputs.sbtConfig
   }
 
   def eval(command: String,
            inputs: Inputs,
-           lineCallback: (String, Boolean, Boolean) => Unit,
-           reload: Boolean): Unit = {
+           lineCallback: LineCallback,
+           reload: Boolean): Boolean = {
 
-    val configChange = needsReload(inputs)
+    val isReloading = needsReload(inputs)
 
     if (inputs.sbtConfig != currentSbtConfig) {
-      write(sbtConfigFile, prompt + nl + inputs.sbtConfig, truncate = true)
-      currentSbtConfig = inputs.sbtConfig
+      setConfig(inputs)
     }
 
     if (inputs.sbtPluginsConfig != currentSbtPluginConfig) {
-      write(pluginFile, inputs.sbtPluginsConfig, truncate = true)
-      currentSbtPluginConfig = inputs.sbtPluginsConfig
+      setPlugins(inputs)
     }
 
-    if (configChange) {
-      process("reload", lineCallback, reload = true)
-    }
+    val reloadError =
+      if (isReloading) {
+        process("reload", lineCallback, reload = true)
+      } else false
 
-    write(codeFile, inputs.code, truncate = true)
-    try {
-      process(command, lineCallback, reload)
-    } catch {
-      case e: IOException => {
-        // when the snippet is pkilled (timeout) the sbt output stream is closed
-        if (e.getMessage == "Stream closed") ()
-        else throw e
+    if (!reloadError) {
+      write(codeFile, inputs.code, truncate = true)
+      try {
+        process(command, lineCallback, reload)
+      } catch {
+        case e: IOException => {
+          // when the snippet is pkilled (timeout) the sbt output stream is closed
+          if (e.getMessage == "Stream closed") ()
+          else throw e
+        }
       }
     }
+
+    reloadError
   }
 }

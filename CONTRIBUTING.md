@@ -8,7 +8,10 @@ You are more than welcome to contribute any PR regardeless if it's listed or not
 requirements: 
 
 * node (for less)
+* phantomjs (for running client tests) ```npm install -g phantomjs```
 * ```export SBT_OPTS="-Xms512M -Xmx1536M -Xss1M -XX:+CMSClassUnloadingEnabled"```
+* sbt
+* docker (for deploying)
 
 ```
 sbt
@@ -22,7 +25,8 @@ open http://localhost:9000
 
 ```
 .
-├── api                 | autowire api (rpc server <=> browser) & models for server <=> sbt (akka-remote)
+├── api                 | autowire api (rpc server <=> browser)
+|                       |   models for server <=> sbt (akka-remote)
 ├── balancer            | distribute load based on sbt configuration
 ├── bin                 | scalfmt runner
 ├── build.sbt           | build definition
@@ -35,11 +39,32 @@ open http://localhost:9000
 ├── project             | build extras like Deployment or Scala.js packaging and plugins
 ├── runtime-dotty       | see `runtime-scala`
 ├── runtime-scala       | methods exposed inside scastie
-├── sbt-api             | api for sbt <=> sbt instance communication over I/O streams
 ├── sbt-runner          | remote actor communicating with sbt instance over I/O streams
 ├── sbt-scastie         | sbt plugin to report errors and console output with the `sbt-api` model 
 ├── server              | web server
 └── utils               | read/writte files
+```
+
+## High-Level Architecture
+
+```
+                                                                            +-----------------------------------------+
+                                                                           +-----------------------------------------+|
+ Scala.js Client     run/save/format                                      +-----------------------------------------+||
++-----------------+  AutowireApi      +---------------------+             |    SbtActor               Sbt(Proccess) |||
+|      AppBackend |  (HTTP)           | +------------+      | akka-remote |   +----------+            +-----------+ |||
+|      +--------+ +-----------------> | |LoadBalancer| <--------------------> |          |            |           | |||
+|      |        | |                   | +------------+      |             |   |          |            |           | |||
+|      |        | |                   |                     |             |   |          |  <----->   |           | |||
+|      |        | |                   | SnippetContainer(DB)|             |   |          | I/O Stream |           | |||
+|      |        | |                   |                     |             |   |          |            |sbt-scastie| |||
+|      |        | | <-----------------+ oauth               |             |   |          |            |           | |||
+|      +--------+ |  SnippetProgress  | static ressources   |             |   +----------+            +-----------+ |||
++-----------------+  (sse/websocket)  +---------------------+             |                                         ||+
+                                                                          |                                         |+
+                                                                          +-----------------------------------------+
+
+Editor: http://asciiflow.com/
 ```
 
 # Let's talk
@@ -50,24 +75,22 @@ If you have any questions join us in the [gitter channel](https://gitter.im/scal
 
 ## Requirements
 
-1. To deploy the application to the productions servers (scastie.scala-lang.org) you will need to have ssh access to the following machines:
+1. To deploy the application to the productions servers (scastie.scala-lang.org) you will need to have ssh access to the following machine:
 
 * `scastie@scastie.scala-lang.org`
-* `scastie@scastie-sbt.scala-lang.org` (inside EPFL's vpn)
 
-Those people have access:
+These people have access:
 
-* @MasseGuillaume
-* @heathermiller
-* @julienrf
-* @jvican
-* @olafurpg
+* [@MasseGuillaume](https://github.com/MasseGuillaume)
+* [@heathermiller](https://github.com/heathermiller)
+* [@julienrf](https://github.com/julienrf)
+* [@jvican](https://github.com/jvican)
+* [@olafurpg](https://github.com/olafurpg)
+* [@dimart](https://github.com/dimart)
 
 2. You need to be a member of the scalacenter on dockerhub: https://hub.docker.com/u/scalacenter 
 
 3. do`docker login`
-
-3. You need sbt, nodejs and docker
 
 4. bump the version in build.sbt
 
@@ -76,3 +99,19 @@ Those people have access:
 6. Run this command locally: `sbt deploy`
 
 7. Make sure everything went well: https://scastie.scala-lang.org
+
+## Restarting
+
+In case anything goes wrong:
+
+```
+ssh scastie@scastie.scala-lang.org
+ssh scastie@scastie-sbt.scala-lang.org
+./sbt.sh
+exit
+./server.sh
+```
+
+# Running with docker locally
+
+`docker run --network=host scalacenter/scastie-sbt-runner:0.20.0`
