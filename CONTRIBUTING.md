@@ -81,11 +81,12 @@ If you have any questions join us in the [gitter channel](https://gitter.im/scal
 
 These people have access:
 
-* @MasseGuillaume
-* @heathermiller
-* @julienrf
-* @jvican
-* @olafurpg
+* [@MasseGuillaume](https://github.com/MasseGuillaume)
+* [@heathermiller](https://github.com/heathermiller)
+* [@julienrf](https://github.com/julienrf)
+* [@jvican](https://github.com/jvican)
+* [@olafurpg](https://github.com/olafurpg)
+* [@dimart](https://github.com/dimart)
 
 2. You need to be a member of the scalacenter on dockerhub: https://hub.docker.com/u/scalacenter 
 
@@ -99,7 +100,18 @@ These people have access:
 
 7. Make sure everything went well: https://scastie.scala-lang.org
 
+## Restarting
 
-## Running with docker locally
+In case anything goes wrong:
+
+```
+ssh scastie@scastie.scala-lang.org
+ssh scastie@scastie-sbt.scala-lang.org
+./sbt.sh
+exit
+./server.sh
+```
+
+# Running with docker locally
 
 `docker run --network=host scalacenter/scastie-sbt-runner:0.20.0`
